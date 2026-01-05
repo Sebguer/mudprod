@@ -7,13 +7,16 @@ mudprod connects to MUD servers via telnet, sends commands as a player would, an
 ## Installation
 
 ```bash
-pip install mudprod
+# Install from GitHub
+pip install git+https://github.com/Sebguer/mudprod.git
 
 # With pytest integration
-pip install mudprod[pytest]
+pip install "mudprod[pytest] @ git+https://github.com/Sebguer/mudprod.git"
 
-# With HTML report generation
-pip install mudprod[pytest,html]
+# Or clone and install locally
+git clone https://github.com/Sebguer/mudprod.git
+cd mudprod
+pip install -e ".[pytest]"
 ```
 
 ## Quick Start
