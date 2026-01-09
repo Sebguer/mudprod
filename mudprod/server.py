@@ -151,6 +151,10 @@ class SessionServer:
             return self._cmd_send_raw(request)
         elif cmd == "read":
             return self._cmd_read(request)
+        elif cmd == "peek":
+            return self._cmd_peek(request)
+        elif cmd == "batch":
+            return self._cmd_batch(request)
         elif cmd == "status":
             return self._cmd_status(request)
         elif cmd == "disconnect":
@@ -285,6 +289,98 @@ class SessionServer:
             "success": True,
             "raw": response.raw,
             "clean": response.clean,
+        }
+
+    def _cmd_peek(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle peek command - check for data without blocking.
+
+        Unlike 'read', peek uses select() to wait up to max_wait seconds
+        for data to arrive. Returns immediately if data is available.
+        """
+        import select as sel
+
+        name = request.get("session", "default")
+        max_wait = request.get("max_wait", 0.1)  # Default 100ms
+
+        session = self.manager.get(name)
+        if not session:
+            return {"success": False, "error": f"Session '{name}' not found"}
+
+        if not session.is_connected or session._socket is None:
+            return {"success": False, "error": "Not connected"}
+
+        # Use select to check if data is available
+        start = time.time()
+        data = ""
+
+        while time.time() - start < max_wait:
+            remaining = max_wait - (time.time() - start)
+            poll_time = min(0.05, remaining)
+
+            readable, _, _ = sel.select([session._socket], [], [], poll_time)
+            if readable:
+                chunk = session._read_available()
+                if chunk:
+                    data += chunk
+                    # Check for more data immediately
+                    continue
+            elif data:
+                # Got data and no more coming
+                break
+
+        # Check triggers if we got data
+        if data:
+            self._check_triggers_inline(name, data, session)
+
+        from .response import MUDResponse
+        response = MUDResponse(raw=data)
+
+        return {
+            "success": True,
+            "raw": response.raw,
+            "clean": response.clean,
+            "has_data": bool(data),
+        }
+
+    def _cmd_batch(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle batch command - send multiple commands and collect responses.
+
+        Reduces round-trip latency by batching multiple commands.
+        """
+        name = request.get("session", "default")
+        commands = request.get("commands", [])
+        wait_time = request.get("wait_time", 2.0)  # Shorter default for batches
+        fast = request.get("fast", False)
+
+        if not commands:
+            return {"success": False, "error": "No commands provided"}
+
+        session = self.manager.get(name)
+        if not session:
+            return {"success": False, "error": f"Session '{name}' not found"}
+
+        if not session.is_connected:
+            session.reconnect()
+            if not session.is_connected:
+                return {"success": False, "error": "Not connected"}
+
+        results = []
+        for cmd in commands:
+            response = session.send_command(cmd, wait_time=wait_time, fast=fast)
+            self._check_triggers_inline(name, response.raw, session)
+            results.append({
+                "command": cmd,
+                "raw": response.raw,
+                "clean": response.clean,
+                "prompt_detected": response.prompt_detected,
+            })
+
+        return {
+            "success": True,
+            "results": results,
+            "count": len(results),
         }
 
     def _cmd_status(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -522,6 +618,50 @@ class SessionClient:
         return self._send_request({
             "command": "read",
             "session": session,
+        })
+
+    def peek(self, session: str = "default", max_wait: float = 0.1) -> Dict[str, Any]:
+        """
+        Peek for available data without blocking long.
+
+        Args:
+            session: Session name
+            max_wait: Max time to wait for data (default 100ms)
+
+        Returns:
+            Response with 'has_data' bool indicating if data was found
+        """
+        return self._send_request({
+            "command": "peek",
+            "session": session,
+            "max_wait": max_wait,
+        })
+
+    def batch(
+        self,
+        commands: list,
+        session: str = "default",
+        wait_time: float = 2.0,
+        fast: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Send multiple commands and collect all responses.
+
+        Args:
+            commands: List of commands to send
+            session: Session name
+            wait_time: Time to wait for each response
+            fast: Use fast mode (shorter timeout)
+
+        Returns:
+            Response with 'results' list of individual command responses
+        """
+        return self._send_request({
+            "command": "batch",
+            "session": session,
+            "commands": commands,
+            "wait_time": wait_time,
+            "fast": fast,
         })
 
     def status(self, session: str = None) -> Dict[str, Any]:

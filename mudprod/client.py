@@ -6,6 +6,7 @@ and captures responses for validation.
 """
 
 import socket
+import select
 import time
 import logging
 import re
@@ -107,7 +108,9 @@ class MUDClient:
 
     DEFAULT_TIMEOUT = 10.0
     DEFAULT_COMMAND_TIMEOUT = 5.0
-    READ_DELAY = 0.3
+    FAST_COMMAND_TIMEOUT = 1.0  # For quick commands like look, score, inv
+    SELECT_POLL_INTERVAL = 0.05  # 50ms - much faster than old 100ms sleep
+    READ_DELAY = 0.1  # Reduced from 0.3
     READ_CHUNK_SIZE = 4096
 
     def __init__(
@@ -182,10 +185,9 @@ class MUDClient:
             self._socket.setblocking(False)
             self._state = ConnectionState.CONNECTED
 
-            # Read initial greeting/banner
-            time.sleep(0.5)
-            greeting = self._read_available()
-            self.logger.debug(f"Greeting: {greeting[:200]}...")
+            # Read initial greeting/banner using select() instead of hard sleep
+            greeting = self._read_with_select(timeout=0.5)
+            self.logger.debug(f"Greeting: {greeting[:200] if greeting else '(empty)'}...")
 
             self.logger.info(f"Connected to {self.host}:{self.port}")
             return True
@@ -266,11 +268,9 @@ class MUDClient:
 
                 # Send the response
                 self.send_raw(f"{response_text}\n")
-                time.sleep(self.READ_DELAY)
 
-            # Read final response and check for success/failure
-            time.sleep(self.READ_DELAY * 2)
-            final_output = self._read_available()
+            # Read final response using select() - wait for prompt or timeout
+            final_output = self._read_with_select(timeout=self.READ_DELAY * 3)
             clean = clean_output(final_output)
 
             # Check for failure patterns
@@ -298,7 +298,8 @@ class MUDClient:
     def send_command(
         self,
         command: str,
-        wait_time: float = None
+        wait_time: float = None,
+        fast: bool = False,
     ) -> MUDResponse:
         """
         Send a command and receive response.
@@ -306,6 +307,7 @@ class MUDClient:
         Args:
             command: The command to send (e.g., "look", "say hello")
             wait_time: Time to wait for response (default: DEFAULT_COMMAND_TIMEOUT)
+            fast: Use shorter timeout for quick commands (look, score, inv, etc.)
 
         Returns:
             MUDResponse with raw and cleaned output
@@ -315,23 +317,30 @@ class MUDClient:
             return MUDResponse(raw="", prompt_detected=False)
 
         if wait_time is None:
-            wait_time = self.DEFAULT_COMMAND_TIMEOUT
+            wait_time = self.FAST_COMMAND_TIMEOUT if fast else self.DEFAULT_COMMAND_TIMEOUT
 
         start = time.time()
-
         self.send_raw(f"{command}\n")
-        time.sleep(min(wait_time, self.READ_DELAY * 2))
 
-        # Read response with timeout
+        # Use select() for efficient waiting instead of sleep-polling
         response = ""
         while time.time() - start < wait_time:
-            chunk = self._read_available()
-            if chunk:
-                response += chunk
-                # If we see a prompt, we're done
-                if self._detect_prompt(response):
-                    break
-            time.sleep(0.1)
+            remaining = wait_time - (time.time() - start)
+            poll_time = min(self.SELECT_POLL_INTERVAL, remaining)
+
+            if self._socket is None:
+                break
+
+            # Wait for data to be available (or timeout)
+            readable, _, _ = select.select([self._socket], [], [], poll_time)
+
+            if readable:
+                chunk = self._read_available()
+                if chunk:
+                    response += chunk
+                    # If we see a prompt, we're done immediately
+                    if self._detect_prompt(response):
+                        break
 
         return MUDResponse(
             raw=response,
@@ -375,19 +384,27 @@ class MUDClient:
         accumulated = ""
 
         while time.time() - start < timeout:
-            chunk = self._read_available()
-            accumulated += chunk
+            remaining = timeout - (time.time() - start)
+            poll_time = min(self.SELECT_POLL_INTERVAL, remaining)
 
-            clean = clean_output(accumulated)
+            if self._socket is None:
+                break
 
-            if regex:
-                if re.search(pattern, clean, re.IGNORECASE):
-                    return True, accumulated
-            else:
-                if pattern.lower() in clean.lower():
-                    return True, accumulated
+            # Use select() instead of sleep-polling
+            readable, _, _ = select.select([self._socket], [], [], poll_time)
 
-            time.sleep(0.1)
+            if readable:
+                chunk = self._read_available()
+                accumulated += chunk
+
+                clean = clean_output(accumulated)
+
+                if regex:
+                    if re.search(pattern, clean, re.IGNORECASE):
+                        return True, accumulated
+                else:
+                    if pattern.lower() in clean.lower():
+                        return True, accumulated
 
         return False, accumulated
 
@@ -419,6 +436,36 @@ class MUDClient:
         result = data.decode('utf-8', errors='replace')
         if result:
             self.logger.debug(f"Read {len(result)} bytes")
+        return result
+
+    def _read_with_select(self, timeout: float = 0.5) -> str:
+        """
+        Read data using select() - returns when data arrives or timeout.
+
+        More efficient than sleep + read_available because it wakes up
+        immediately when data is available.
+        """
+        if not self._socket:
+            return ""
+
+        result = ""
+        start = time.time()
+
+        while time.time() - start < timeout:
+            remaining = timeout - (time.time() - start)
+            poll_time = min(self.SELECT_POLL_INTERVAL, remaining)
+
+            readable, _, _ = select.select([self._socket], [], [], poll_time)
+            if readable:
+                chunk = self._read_available()
+                if chunk:
+                    result += chunk
+                    # Got data, check if more is immediately available
+                    continue
+            elif result:
+                # We have data and nothing more is coming
+                break
+
         return result
 
     def _detect_prompt(self, text: str) -> bool:

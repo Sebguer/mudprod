@@ -5,11 +5,16 @@ CLI for mudprod session server.
 Usage:
     mudprod start                     Start the session server
     mudprod connect HOST PORT [STEPS] Connect to a MUD
-    mudprod send COMMAND              Send command, print response
+    mudprod send [--fast] COMMAND     Send command, print response
     mudprod raw TEXT                  Send raw text (no wait)
     mudprod read                      Read available output
+    mudprod peek [--wait SEC]         Quick check for incoming data (default 100ms)
+    mudprod batch CMD1 CMD2 ...       Send multiple commands, get all responses
     mudprod status                    Show session status
     mudprod stop                      Stop server and disconnect
+
+Flags:
+    --fast    Use shorter timeout (1s vs 5s) for quick commands
 
 Set MUDPROD_LOG to a file path to log all I/O.
 """
@@ -41,7 +46,8 @@ def main():
 
     if not args:
         print("Usage: mudprod <command> [args]")
-        print("Commands: start, connect, send, raw, read, status, stop")
+        print("Commands: start, connect, send, raw, read, peek, batch, status, stop")
+        print("Use --fast with send/batch for quicker commands (1s timeout)")
         return 1
 
     cmd = args[0]
@@ -95,10 +101,14 @@ def main():
         return 0 if r.get("success") else 1
 
     if cmd == "send":
-        text = " ".join(rest)
+        # Check for --fast flag
+        fast = "--fast" in rest
+        args = [a for a in rest if a != "--fast"]
+        text = " ".join(args)
         session = os.environ.get("MUDPROD_SESSION", "default")
+        wait_time = 1.0 if fast else 5.0
         log_io(">>> SEND", text)
-        r = client.send(text, session=session)
+        r = client.send(text, session=session, wait_time=wait_time)
         if r.get("success"):
             log_io("<<< RECV", r["clean"])
             print(r["clean"])
@@ -124,6 +134,43 @@ def main():
             print(r["clean"])
         else:
             print(f"error: {r.get('error')}")
+        return 0
+
+    if cmd == "peek":
+        # peek [--wait SECONDS] - check for data without blocking
+        session = os.environ.get("MUDPROD_SESSION", "default")
+        max_wait = 0.1
+        if rest and rest[0] == "--wait" and len(rest) > 1:
+            max_wait = float(rest[1])
+        r = client.peek(session=session, max_wait=max_wait)
+        if r.get("success"):
+            if r.get("has_data"):
+                log_io("<<< PEEK", r["clean"])
+                print(r["clean"])
+            # No output if no data - silent peek
+        else:
+            print(f"error: {r.get('error')}")
+        return 0
+
+    if cmd == "batch":
+        # batch cmd1 cmd2 cmd3... - send multiple commands
+        if not rest:
+            print("Usage: mudprod batch COMMAND [COMMAND...]")
+            return 1
+        session = os.environ.get("MUDPROD_SESSION", "default")
+        # Check for --fast flag
+        fast = "--fast" in rest
+        commands = [c for c in rest if c != "--fast"]
+        log_io(">>> BATCH", "\n".join(commands))
+        r = client.batch(commands, session=session, fast=fast)
+        if r.get("success"):
+            for result in r.get("results", []):
+                print(f"--- {result['command']} ---")
+                log_io(f"<<< {result['command']}", result["clean"])
+                print(result["clean"])
+        else:
+            print(f"error: {r.get('error')}")
+            return 1
         return 0
 
     if cmd == "disconnect":
