@@ -97,6 +97,12 @@ class MUDClient:
 
         response = client.send_command("look")
         client.disconnect()
+
+    As context manager:
+        with MUDClient("localhost", 4000) as client:
+            client.login(login_config)
+            response = client.send_command("look")
+        # Automatically disconnects
     """
 
     DEFAULT_TIMEOUT = 10.0
@@ -111,6 +117,7 @@ class MUDClient:
         timeout: float = DEFAULT_TIMEOUT,
         prompt_config: Optional[PromptConfig] = None,
         logger: Optional[logging.Logger] = None,
+        auto_reconnect: bool = False,
     ):
         """
         Initialize MUD client.
@@ -121,16 +128,29 @@ class MUDClient:
             timeout: Connection timeout in seconds
             prompt_config: Custom prompt detection configuration
             logger: Optional logger instance
+            auto_reconnect: Automatically reconnect if connection drops
         """
         self.host = host
         self.port = port
         self.timeout = timeout
         self.prompt_config = prompt_config or PromptConfig()
         self.logger = logger or logging.getLogger(__name__)
+        self.auto_reconnect = auto_reconnect
 
         self._socket: Optional[socket.socket] = None
         self._state = ConnectionState.DISCONNECTED
         self._buffer = ""
+        self._login_config: Optional[LoginConfig] = None
+
+    def __enter__(self) -> "MUDClient":
+        """Context manager entry - connects automatically."""
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit - disconnects automatically."""
+        self.disconnect()
+        return None
 
     @property
     def state(self) -> ConnectionState:
@@ -185,6 +205,39 @@ class MUDClient:
         self._state = ConnectionState.DISCONNECTED
         self.logger.info("Disconnected")
 
+    def reconnect(self) -> bool:
+        """
+        Reconnect to the server and re-login if credentials are stored.
+
+        Returns:
+            True if reconnection (and re-login if applicable) successful
+        """
+        self.logger.info("Attempting reconnect...")
+        self.disconnect()
+
+        if not self.connect():
+            return False
+
+        if self._login_config:
+            return self.login(self._login_config)
+
+        return True
+
+    def ensure_connected(self) -> bool:
+        """
+        Ensure the client is connected, reconnecting if necessary.
+
+        Returns:
+            True if connected (or successfully reconnected)
+        """
+        if self.is_connected:
+            return True
+
+        if self.auto_reconnect:
+            return self.reconnect()
+
+        return False
+
     def login(self, config: LoginConfig) -> bool:
         """
         Execute login flow based on configuration.
@@ -196,6 +249,7 @@ class MUDClient:
             True if login successful, False otherwise
         """
         self._state = ConnectionState.AUTHENTICATING
+        self._login_config = config  # Store for auto-reconnect
 
         try:
             for prompt_pattern, response_text in config.steps:
@@ -256,6 +310,10 @@ class MUDClient:
         Returns:
             MUDResponse with raw and cleaned output
         """
+        if not self.ensure_connected():
+            self.logger.error("Not connected and could not reconnect")
+            return MUDResponse(raw="", prompt_detected=False)
+
         if wait_time is None:
             wait_time = self.DEFAULT_COMMAND_TIMEOUT
 
@@ -343,10 +401,18 @@ class MUDClient:
             while True:
                 chunk = self._socket.recv(self.READ_CHUNK_SIZE)
                 if not chunk:
+                    # Empty bytes means server closed the connection
+                    self.logger.info("Server closed connection")
+                    self._state = ConnectionState.DISCONNECTED
+                    self._socket = None
                     break
                 data += chunk
         except BlockingIOError:
             pass  # No more data available
+        except ConnectionResetError:
+            self.logger.info("Connection reset by server")
+            self._state = ConnectionState.DISCONNECTED
+            self._socket = None
         except Exception as e:
             self.logger.debug(f"Read error (often normal): {e}")
 

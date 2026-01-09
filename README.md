@@ -208,6 +208,121 @@ pytest tests/ -v --html=report.html  # With HTML report
 | `assert_prompt(response)` | Check prompt was detected |
 | `assert_line_count(response, min, max)` | Check line count |
 
+## CLI Usage
+
+mudprod includes a CLI for persistent session management. This is useful for agents or scripts that need to maintain a connection across multiple invocations.
+
+```bash
+# Start the background session server
+mudprod start
+
+# Connect to a MUD
+mudprod connect achaea.com 23
+
+# With login steps (JSON array of [prompt, response] pairs)
+mudprod connect achaea.com 23 '[["name:", "myuser"], ["password:", "mypass"]]'
+
+# Send commands
+mudprod send look
+mudprod send "say hello world"
+
+# Read any pending output
+mudprod read
+
+# Send raw text (no wait for response)
+mudprod raw "emote waves"
+
+# Check connection status
+mudprod status
+
+# Disconnect and stop server
+mudprod disconnect
+mudprod stop
+```
+
+### Triggers and Auto-Repeat
+
+The CLI supports triggers that fire commands when patterns are matched:
+
+```bash
+# Auto-repeat a command on balance recovery (MUD-specific)
+mudprod repeat "attack goblin"
+
+# Disable repeat
+mudprod repeat off
+
+# Add custom triggers (pattern -> command)
+mudprod trigger "You are hungry" "eat bread"
+
+# List active triggers
+mudprod triggers
+
+# Clear all triggers
+mudprod trigger clear
+```
+
+### Environment Variables
+
+- `MUDPROD_SESSION` - Session name (default: "default")
+- `MUDPROD_LOG` - Log file path for I/O logging
+
+### Multiple Sessions
+
+Use different session names to maintain multiple connections:
+
+```bash
+MUDPROD_SESSION=player1 mudprod connect server.com 4000
+MUDPROD_SESSION=player2 mudprod connect server.com 4000
+
+MUDPROD_SESSION=player1 mudprod send "say I am player 1"
+MUDPROD_SESSION=player2 mudprod send "say I am player 2"
+```
+
+## Session Manager (Python API)
+
+For more control, use `SessionManager` directly:
+
+```python
+from mudprod import SessionManager, SessionConfig, LoginConfig
+
+# Create manager
+manager = SessionManager()
+
+# Configure session
+config = SessionConfig(
+    host="localhost",
+    port=4000,
+    login_config=LoginConfig(steps=[
+        ("name:", "testuser"),
+        ("password:", "testpass"),
+    ]),
+    auto_reconnect=True,
+)
+
+# Create named session
+session = manager.create("player1", config)
+response = session.send_command("look")
+
+# Get existing session later
+session = manager.get("player1")
+response = session.send_command("inventory")
+
+# Session status
+print(manager.status())
+
+# Clean up
+manager.close_all()
+```
+
+As a context manager:
+
+```python
+with SessionManager() as manager:
+    session = manager.create("test", config)
+    response = session.send_command("look")
+# Automatically closes all sessions
+```
+
 ## License
 
 MIT License - see LICENSE file for details.

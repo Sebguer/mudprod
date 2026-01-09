@@ -50,6 +50,9 @@ Homepage = "https://github.com/mudprod/mudprod"
 Repository = "https://github.com/mudprod/mudprod"
 Issues = "https://github.com/mudprod/mudprod/issues"
 
+[project.scripts]
+mudprod = "mudprod.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mudprod*"]

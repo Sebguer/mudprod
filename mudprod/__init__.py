@@ -8,6 +8,8 @@ __version__ = "0.1.0"
 
 from .client import MUDClient, PromptConfig, LoginConfig, quick_connect
 from .response import MUDResponse
+from .session import SessionManager, SessionConfig
+from .server import SessionServer, SessionClient, start_server_background
 from .ansi import clean_output, strip_ansi, strip_telnet_codes
 from .assertions import (
     assert_contains,
@@ -23,6 +25,11 @@ __all__ = [
     "MUDResponse",
     "PromptConfig",
     "LoginConfig",
+    "SessionManager",
+    "SessionConfig",
+    "SessionServer",
+    "SessionClient",
+    "start_server_background",
     "quick_connect",
     "clean_output",
     "strip_ansi",
