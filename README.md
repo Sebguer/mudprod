@@ -184,7 +184,7 @@ pytest tests/ -v --html=report.html  # With HTML report
 | `connect()` | Establish TCP connection, returns bool |
 | `disconnect()` | Close connection |
 | `login(config)` | Execute login flow, returns bool |
-| `send_command(cmd)` | Send command, wait for response, returns MUDResponse |
+| `send_command(cmd, wait_time=None, fast=False)` | Send command, wait for response, returns MUDResponse. Use `fast=True` for 1s timeout. |
 | `send_raw(data)` | Send raw data without waiting |
 | `read_available()` | Read any pending data, returns MUDResponse |
 | `wait_for_pattern(pattern, timeout)` | Wait for specific output |
@@ -226,8 +226,20 @@ mudprod connect achaea.com 23 '[["name:", "myuser"], ["password:", "mypass"]]'
 mudprod send look
 mudprod send "say hello world"
 
+# Fast mode (1s timeout instead of 5s - good for quick commands)
+mudprod send --fast look
+mudprod send --fast score
+
 # Read any pending output
 mudprod read
+
+# Peek for data without blocking (default 100ms wait)
+mudprod peek
+mudprod peek --wait 0.5  # Wait up to 500ms
+
+# Send multiple commands in one call (reduces round-trip latency)
+mudprod batch look inventory score
+mudprod batch --fast look inv score  # With fast mode
 
 # Send raw text (no wait for response)
 mudprod raw "emote waves"
@@ -239,6 +251,15 @@ mudprod status
 mudprod disconnect
 mudprod stop
 ```
+
+### Low-Latency Mode
+
+The CLI is optimized for LLM/agent automation with minimal latency:
+
+- **`--fast` flag**: Uses 1s timeout instead of 5s for quick commands (~100-150ms typical)
+- **`peek`**: Non-blocking check for incoming data, returns immediately if none
+- **`batch`**: Send multiple commands in one call, reducing IPC overhead
+- Uses `select()` for efficient I/O instead of sleep-polling
 
 ### Triggers and Auto-Repeat
 
